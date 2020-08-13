@@ -174,7 +174,7 @@ class _LinePlotter(_RelationalPlotter):
         self, *,
         data=None, variables={},
         estimator=None, ci=None, n_boot=None, seed=None,
-        sort=True, err_style=None, err_kws=None, legend=None
+        sort=True, err_style=None, err_kws=None, legend=None, returnBootSamples=False
     ):
 
         # TODO this is messy, we want the mapping to be agnoistic about
@@ -186,32 +186,48 @@ class _LinePlotter(_RelationalPlotter):
 
         super().__init__(data=data, variables=variables)
 
-        self.estimator = estimator
-        self.ci = ci
-        self.n_boot = n_boot
+        self.estimator = estimator      # Default: [lineplot:"mean"]
+        self.ci = ci                    # Default: [lineplot:95]
+        self.n_boot = n_boot            # Default: [lineplot:1000]
         self.seed = seed
         self.sort = sort
-        self.err_style = err_style
+        self.err_style = err_style      # Default: [lineplot:"band"]
         self.err_kws = {} if err_kws is None else err_kws
 
-        self.legend = legend
+        # Liaw: Created flag to return the bootstrapped samples
+        self.returnBootSamples = returnBootSamples
 
+        self.legend = legend            # Default: [lineplot:"brief"]
+
+    # ====================== Usage in lineplot ======================
+    # if self.estimator is not None: (estimator: "mean" by default)
+    #     if "units" in self.variables:
+    #         err = "estimator must be None when specifying units"
+    #         raise ValueError(err)
+    #     x, y, y_ci = self.aggregate(y, x, u) 
+    # else: 
+    #     y_ci = None
+    #     (If no estimator has been specified, then no confidence 
+    #      interval will be returned)
+    # ===============================================================
     def aggregate(self, vals, grouper, units=None):
-        """Compute an estimate and confidence interval using grouper."""
-        func = self.estimator
-        ci = self.ci
-        n_boot = self.n_boot
-        seed = self.seed
+        """Compute an estimate and confidence interval using grouper.
+            vals: y, grouper: x, units: u
+        """
+        func = self.estimator   # Default: "mean"
+        ci = self.ci            # Default: 95
+        n_boot = self.n_boot    # Default: 1000 samplings
+        seed = self.seed        # Default: Random seed
 
         # Define a "null" CI for when we only have one value
         null_ci = pd.Series(index=["low", "high"], dtype=np.float)
 
         # Function to bootstrap in the context of a pandas group by
         def bootstrapped_cis(vals):
-
+            # No bootstrapping if we're only dealing with one sample, obviously
             if len(vals) <= 1:
                 return null_ci
-
+            # Returns boots (An array of bootstrapped statistic values)
             boots = bootstrap(vals, func=func, n_boot=n_boot, seed=seed)
             cis = ci_func(boots, ci)
             return pd.Series(cis, ["low", "high"])
@@ -238,8 +254,12 @@ class _LinePlotter(_RelationalPlotter):
             cis = cis.unstack().reindex(est.index)
         else:
             cis = None
-
-        return est.index, est, cis
+        
+        if not self.returnBootSamples:
+            # Returning x, y, y_ci in simpler terms
+            return est.index, est, cis
+        else:
+            return est.index, est, cis, bootstrapped_cis
 
     def plot(self, ax, kws):
         """Draw the plot onto an axes, passing matplotlib kwargs."""
@@ -288,6 +308,10 @@ class _LinePlotter(_RelationalPlotter):
 
         # Loop over the semantic subsets and add to the plot
         grouping_semantics = "hue", "size", "style"
+        # Creating list to store the x, y and y_ci values
+        self.xValues = []
+        self.yValues = []
+        self.y_ciValues = []
         for sub_vars, sub_data in self._semantic_subsets(
             grouping_semantics, from_comp_data=True
         ):
@@ -311,7 +335,17 @@ class _LinePlotter(_RelationalPlotter):
                 if "units" in self.variables:
                     err = "estimator must be None when specifying units"
                     raise ValueError(err)
-                x, y, y_ci = self.aggregate(y, x, u)
+                try:
+                    x, y, y_ci, seriesSample = self.aggregate(y, x, u)
+                    self.xValues.append(x)
+                    self.yValues.append(y)
+                    self.y_ciValues.append(y_ci)
+                    self.bootstrappedSamples = seriesSample
+                except:
+                    x, y, y_ci = self.aggregate(y, x, u)
+                    self.xValues.append(x)
+                    self.yValues.append(y)
+                    self.y_ciValues.append(y_ci)
             else:
                 y_ci = None
 
@@ -657,7 +691,8 @@ def lineplot(
     p._attach(ax)
 
     p.plot(ax, kwargs)
-    return ax
+    # Liaw: Return the _LinePlotter object too
+    return ax, p
 
 
 lineplot.__doc__ = dedent("""\
